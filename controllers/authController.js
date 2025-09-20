@@ -163,36 +163,54 @@ const AuthController = {
     /**
      * @description Gère l'inscription d'un nouvel utilisateur.
      */
+    /**
+     * @description Gère l'inscription d'un nouvel utilisateur.
+     */
     signup: async (req, res) => {
         const { email, password } = req.body;
         if (!email || !password) {
-            return res.status(400).json({
-                error: "L'email et le mot de passe sont requis.",
-            });
+            return res
+                .status(400)
+                .json({ error: "L'email et le mot de passe sont requis." });
         }
 
         try {
-            const { data, error } = await AuthModel.signUp(email, password);
+            // Étape 1 : Créer l'utilisateur dans Supabase Auth
+            const { data: userData, error: userError } =
+                await AuthModel.signUpWithPassword(email, password);
 
-            if (error) {
-                return res.status(400).json({ error: error.message });
+            if (userError) {
+                return res.status(400).json({ error: userError.message });
             }
 
-            // Génération du lien de vérification par Supabase
+            // Étape 2 : Générer le lien de vérification via l'API Admin de Supabase
             const { data: linkData, error: linkError } =
-                await AuthModel.generateEmailVerificationLink(email);
+                await AuthModel.generateLink({
+                    type: "signup",
+                    email: email,
+                });
+
             if (linkError) {
-                throw linkError;
+                console.error(
+                    "Erreur lors de la génération du lien:",
+                    linkError
+                );
+                return res
+                    .status(500)
+                    .json({
+                        error: "Erreur serveur lors de la génération du lien.",
+                    });
             }
 
-            const verificationLink = linkData.properties.email_redirect_to;
+            const verificationLink = linkData.properties.action_link;
 
-            // Envoi de l'e-mail avec Nodemailer
+            // Étape 3 : Envoyer l'e-mail avec Nodemailer en utilisant le lien généré
             const mailOptions = {
                 from: process.env.SMTP_FROM_EMAIL,
                 to: email,
                 subject: "Vérification de votre compte",
                 html: `
+                    <p>Bonjour,</p>
                     <p>Cliquez sur ce lien pour vérifier votre adresse e-mail :</p>
                     <a href="${verificationLink}">Vérifier mon compte</a>
                 `,
@@ -209,7 +227,6 @@ const AuthController = {
             res.status(500).json({ error: "Erreur serveur interne." });
         }
     },
-
     /**
      * @description Gère la vérification d'un code OTP ou token pour un utilisateur.
      */
@@ -229,6 +246,85 @@ const AuthController = {
                     error: "Jeton de vérification invalide ou expiré.",
                 });
             }
+
+            res.status(200).json({
+                message: "Votre compte a été vérifié avec succès.",
+                session: data.session,
+                user: data.user,
+            });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: "Erreur serveur interne." });
+        }
+    },
+    /**
+     * @description Crée un nouvel utilisateur et son profil dans la table 'profiles'.
+     * @param {string} email
+     * @param {string} password
+     * @param {string} role
+     * @returns {object} L'objet user et le profil créé.
+     */
+    signUpWithProfile: async (email, password, role = "employee") => {
+        // Étape 1 : Créer l'utilisateur dans Supabase Auth
+        const { data: userData, error: userError } = await supabase.auth.signUp(
+            {
+                email,
+                password,
+            }
+        );
+        if (userError) return { error: userError };
+
+        // Étape 2 : Créer le profil associé dans la table 'profiles'
+        const { data: profileData, error: profileError } = await supabase
+            .from("profiles")
+            .insert([
+                {
+                    id: userData.user.id,
+                    full_name: userData.user.email,
+                    role: role,
+                    email_validated: false, // Le profil n'est pas encore validé
+                },
+            ]);
+        if (profileError) return { error: profileError };
+
+        return {
+            data: { user: userData.user, profile: profileData },
+            error: null,
+        };
+    },
+
+    /**
+     * @description Met à jour le profil de l'utilisateur après la vérification de l'e-mail.
+     * @param {string} userId
+     */
+    validateUserProfile: async (userId) => {
+        const { data, error } = await supabase
+            .from("profiles")
+            .update({
+                email_validated: true,
+                last_validated_at: new Date().toISOString(),
+            })
+            .eq("id", userId);
+        return { data, error };
+    },
+    verifyOtp: async (req, res) => {
+        const { email, token } = req.body;
+        if (!email || !token) {
+            return res.status(400).json({
+                error: "L'email et le jeton de vérification sont requis.",
+            });
+        }
+
+        try {
+            const { data, error } = await AuthModel.verifyOtp(email, token);
+            if (error) {
+                return res.status(400).json({
+                    error: "Jeton de vérification invalide ou expiré.",
+                });
+            }
+
+            // Met à jour le profil de l'utilisateur après la vérification
+            await AuthModel.validateUserProfile(data.user.id);
 
             res.status(200).json({
                 message: "Votre compte a été vérifié avec succès.",
