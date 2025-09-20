@@ -13,5 +13,10 @@ router.post('/forgot-password', AuthController.forgotPassword);
 
 // Route pour la réinitialisation du mot de passe
 router.post('/reset-password', AuthController.resetPassword);
+// Route pour l'inscription d'un nouvel utilisateur
+router.post("/signup", AuthController.signup);
+
+// Route pour la vérification de l'email avec le jeton (token)
+router.post("/verify-otp", AuthController.verifyOtp);
 
 module.exports = router;
