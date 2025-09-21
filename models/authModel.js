@@ -1,177 +1,172 @@
 // models/authModel.js
-const { createClient } = require("@supabase/supabase-js");
+const { Pool } = require("pg");
+const bcrypt = require("bcrypt");
+const { v4: uuidv4 } = require("uuid");
 
-// On initialise Supabase ici pour que tous les modèles puissent l'utiliser
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY; 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const pool = new Pool({
+    user: process.env.DB_USER,
+    host: process.env.DB_HOST,
+    database: process.env.DB_NAME,
+    password: process.env.DB_PASSWORD,
+    port: process.env.DB_PORT,
+});
 
 const AuthModel = {
-    /**
-     * @description Envoie une invitation par email via un lien magique de Supabase.
-     * @param {string} email
-     */
-    inviteUserByEmail: async (email) => {
-        return supabase.auth.signInWithOtp({ email });
-    },
-
-    /**
-     * @description Authentifie un utilisateur avec son email et mot de passe.
-     * @param {string} email
-     * @param {string} password
-     */
-    signInWithPassword: async (email, password) => {
-        return supabase.auth.signInWithPassword({ email, password });
-    },
-
-    /**
-     * @description Récupère le profil d'un utilisateur par son ID.
-     * @param {string} userId
-     */
-    getProfileById: async (userId) => {
-        return supabase
-            .from("profiles")
-            .select("role")
-            .eq("id", userId)
-            .single();
-    },
-
-    /**
-     * @description Envoie un email de réinitialisation de mot de passe à l'utilisateur.
-     * @param {string} email
-     */
-    sendPasswordResetEmail: async (email) => {
-        return supabase.auth.resetPasswordForEmail(email);
-    },
-
-    /**
-     * @description Met à jour le mot de passe d'un utilisateur.
-     * Cette fonction est appelée après la vérification via le lien.
-     * @param {string} newPassword
-     */
-    updatePassword: async (newPassword) => {
-        return supabase.auth.updateUser({ password: newPassword });
-    },
-
-    //-----------------------------------------------------
-    // Nouvelles méthodes ajoutées pour les fonctionnalités avancées
-    //-----------------------------------------------------
-
-    /**
-     * @description Crée un nouvel utilisateur.
-     * @param {string} email
-     * @param {string} password
-     */
-    signUp: async (email, password) => {
-        return supabase.auth.signUp({ email, password });
-    },
-
-    /**
-     * @description Vérifie un code à usage unique (OTP) pour l'email.
-     * @param {string} email
-     * @param {string} token
-     */
-    verifyOtp: async (email, token) => {
-        return supabase.auth.verifyOtp({ email, token, type: "email" });
-    },
-
-    /**
-     * @description Génère un lien d'invitation d'administrateur.
-     * @param {string} email
-     */
-    generateInvitationLink: async (email) => {
-        return supabase.auth.admin.generateLink({
-            type: "invite",
-            email: email,
-        });
-    },
-
-    /**
-     * @description Génère un lien de réinitialisation de mot de passe.
-     * @param {string} email
-     */
-    generatePasswordResetLink: async (email) => {
-        return supabase.auth.admin.generateLink({
-            type: "password_reset",
-            email: email,
-        });
-    },
-
-    /**
-     * @description Génère un lien de vérification d'email pour l'inscription.
-     * @param {string} email
-     */
-    generateEmailVerificationLink: async (email) => {
-        return supabase.auth.admin.generateLink({
-            type: "signup",
-            email: email,
-        });
-    },
-    /**
-     * @description Crée un nouvel utilisateur et son profil dans la table 'profiles'.
-     * @param {string} email
-     * @param {string} password
-     * @param {string} role
-     * @returns {object} L'objet user et le profil créé.
-     */
-    signUpWithProfile: async (email, password, role = "employee") => {
-        // Étape 1 : Créer l'utilisateur dans Supabase Auth
-        const { data: userData, error: userError } = await supabase.auth.signUp(
-            {
-                email,
-                password,
-            }
+    // Company methods
+    async createCompany(name) {
+        const result = await pool.query(
+            "INSERT INTO companies (name) VALUES ($1) RETURNING *",
+            [name]
         );
-        if (userError) return { error: userError };
-
-        // Étape 2 : Créer le profil associé dans la table 'profiles'
-        const { data: profileData, error: profileError } = await supabase
-            .from("profiles")
-            .insert([
-                {
-                    id: userData.user.id,
-                    full_name: userData.user.email,
-                    role: role,
-                    email_validated: false, // Le profil n'est pas encore validé
-                },
-            ]);
-        if (profileError) return { error: profileError };
-
-        return {
-            data: { user: userData.user, profile: profileData },
-            error: null,
-        };
+        return result.rows[0];
     },
 
-    /**
-     * @description Met à jour le profil de l'utilisateur après la vérification de l'e-mail.
-     * @param {string} userId
-     */
-    validateUserProfile: async (userId) => {
-        const { data, error } = await supabase
-            .from("profiles")
-            .update({
-                email_validated: true,
-                last_validated_at: new Date().toISOString(),
-            })
-            .eq("id", userId);
-        return { data, error };
-    },
-    generateLink: async (options) => {
-        const { data, error } = await supabase.auth.admin.generateLink(options);
-        return { data, error };
+    // User methods
+    async createUser(email, password, role, company_id, category) {
+        const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
+        const result = await pool.query(
+            "INSERT INTO users (email, password, role, company_id, category) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+            [email, hashedPassword, role, company_id, category]
+        );
+        return result.rows[0];
     },
 
-    signUpWithPassword: async (email, password) => {
-        // Crée l'utilisateur de manière sécurisée sans générer d'e-mail
-        // La méthode Admin `generateLink` est utilisée pour ça
-        const { data, error } = await supabase.auth.admin.createUser({
+    async findUserByEmail(email) {
+        const result = await pool.query("SELECT * FROM users WHERE email = $1", [
             email,
-            password,
-            email_confirm: false, // Ne pas envoyer d'e-mail de confirmation
-        });
-        return { data, error };
+        ]);
+        return result.rows[0];
+    },
+
+    async findUserById(id) {
+        const result = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+        return result.rows[0];
+    },
+
+    async updatePassword(userId, password) {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const result = await pool.query(
+            "UPDATE users SET password = $1 WHERE id = $2",
+            [hashedPassword, userId]
+        );
+        return result.rowCount > 0;
+    },
+
+    async validateUserEmail(userId) {
+        const result = await pool.query(
+            "UPDATE users SET email_validated = true, last_validated_at = NOW() WHERE id = $1",
+            [userId]
+        );
+        return result.rowCount > 0;
+    },
+
+    // Password reset token methods
+    async createPasswordResetToken(userId) {
+        const token = uuidv4();
+        const expires_at = new Date(Date.now() + 3600000); // 1 hour from now
+        await pool.query(
+            "INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+            [userId, token, expires_at]
+        );
+        return token;
+    },
+
+    async findPasswordResetToken(token) {
+        const result = await pool.query(
+            "SELECT * FROM password_reset_tokens WHERE token = $1 AND expires_at > NOW()",
+            [token]
+        );
+        return result.rows[0];
+    },
+
+    async deletePasswordResetToken(token) {
+        await pool.query("DELETE FROM password_reset_tokens WHERE token = $1", [
+            token,
+        ]);
+    },
+
+    // Password setup token methods
+    async createPasswordSetupToken(userId) {
+        const token = uuidv4();
+        const expires_at = new Date(Date.now() + 24 * 3600000); // 24 hours from now
+        await pool.query(
+            "INSERT INTO password_setup_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+            [userId, token, expires_at]
+        );
+        return token;
+    },
+
+    async findPasswordSetupToken(token) {
+        const result = await pool.query(
+            "SELECT * FROM password_setup_tokens WHERE token = $1 AND expires_at > NOW()",
+            [token]
+        );
+        return result.rows[0];
+    },
+
+    async deletePasswordSetupToken(token) {
+        await pool.query("DELETE FROM password_setup_tokens WHERE token = $1", [
+            token,
+        ]);
+    },
+
+    // Email verification OTP methods
+    async createEmailVerificationOtp(userId) {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expires_at = new Date(Date.now() + 600000); // 10 minutes from now
+        await pool.query(
+            "INSERT INTO email_verification_otps (user_id, otp, expires_at) VALUES ($1, $2, $3)",
+            [userId, otp, expires_at]
+        );
+        return otp;
+    },
+
+    async findEmailVerificationOtp(userId, otp) {
+        const result = await pool.query(
+            "SELECT * FROM email_verification_otps WHERE user_id = $1 AND otp = $2 AND expires_at > NOW()",
+            [userId, otp]
+        );
+        return result.rows[0];
+    },
+
+    async deleteEmailVerificationOtp(userId, otp) {
+        await pool.query("DELETE FROM email_verification_otps WHERE user_id = $1 AND otp = $2", [
+            userId,
+            otp,
+        ]);
+    },
+
+    // Password reset OTP methods
+    async createPasswordResetOtp(userId) {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+        const expires_at = new Date(Date.now() + 600000); // 10 minutes from now
+        await pool.query(
+            "INSERT INTO password_reset_otps (user_id, otp, expires_at) VALUES ($1, $2, $3)",
+            [userId, otp, expires_at]
+        );
+        return otp;
+    },
+
+    async findPasswordResetOtp(userId, otp) {
+        const result = await pool.query(
+            "SELECT * FROM password_reset_otps WHERE user_id = $1 AND otp = $2 AND expires_at > NOW()",
+            [userId, otp]
+        );
+        return result.rows[0];
+    },
+
+    async deletePasswordResetOtp(userId, otp = null) {
+        if (otp) {
+            await pool.query("DELETE FROM password_reset_otps WHERE user_id = $1 AND otp = $2", [
+                userId,
+                otp,
+            ]);
+        } else {
+            await pool.query("DELETE FROM password_reset_otps WHERE user_id = $1", [
+                userId,
+            ]);
+        }
     },
 };
 
-module.exports = AuthModel;
+module.exports = { AuthModel, pool };
